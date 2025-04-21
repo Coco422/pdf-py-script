@@ -95,19 +95,32 @@ async def call_openai_api(image_data: bytes, prompt: str):
         "max_tokens": 1000
     }
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"OpenAI API错误: {response.status} - {error_text}")
-                    raise HTTPException(status_code=response.status, detail=f"OpenAI API错误: {error_text}")
-                
-                result = await response.json()
-                return result["choices"][0]["message"]["content"]
-    except aiohttp.ClientError as e:
-        logger.error(f"调用OpenAI API时发生错误: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"调用OpenAI API时发生错误: {str(e)}")
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"OpenAI API错误: {response.status} - {error_text}")
+                        # 如果是最后一次重试，则抛出异常
+                        if retry_count == max_retries - 1:
+                            raise HTTPException(status_code=response.status, detail=f"OpenAI API错误: {error_text}")
+                        retry_count += 1
+                        continue
+                    
+                    result = await response.json()
+                    return result["choices"][0]["message"]["content"]
+            # 如果成功执行到这里，跳出循环
+            break
+        except aiohttp.ClientError as e:
+            logger.error(f"调用OpenAI API时发生错误 (尝试 {retry_count+1}/{max_retries}): {str(e)}")
+            # 如果是最后一次重试，则抛出异常
+            if retry_count == max_retries - 1:
+                raise HTTPException(status_code=500, detail=f"调用OpenAI API时发生错误: {str(e)}")
+            retry_count += 1
 
 @app.post("/analyze", response_model=ImageAnalysisResponse)
 async def analyze_image(
@@ -115,7 +128,7 @@ async def analyze_image(
     prompt: str = Form(...),
 ):
     """
-    上传图片和提示词，使用GPT-4o-mini模型进行分析
+    上传图片和提示词，默认使用GPT-4o-mini模型进行分析
     
     - **file**: 要分析的图片文件
     - **prompt**: 分析提示词
@@ -142,7 +155,7 @@ async def analyze_image_json(
     prompt: str = Form(...),
 ):
     """
-    上传图片和提示词，使用GPT-4o-mini模型进行分析并返回JSON结果
+    上传图片和提示词，默认使用GPT-4o-mini模型进行分析并返回JSON结果
     
     - **file**: 要分析的图片文件
     - **prompt**: 分析提示词，应当要求模型返回JSON格式
@@ -192,6 +205,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app", 
         host="0.0.0.0", 
-        port=8000, 
+        port=33880, 
         reload=True
     )
