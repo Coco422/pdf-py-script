@@ -4,7 +4,7 @@
 import os
 import base64
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import json
 from dotenv import load_dotenv
 import uvicorn
@@ -60,6 +60,8 @@ class ImageAnalysisRequest(BaseModel):
     
 class ImageAnalysisResponse(BaseModel):
     result: str
+    model: str
+    usage: Optional[Dict[str, int]] = None
     
 async def call_openai_api(image_data: bytes, prompt: str):
     """调用OpenAI API处理图片和提示词"""
@@ -112,7 +114,7 @@ async def call_openai_api(image_data: bytes, prompt: str):
                         continue
                     
                     result = await response.json()
-                    return result["choices"][0]["message"]["content"]
+                    return result
             # 如果成功执行到这里，跳出循环
             break
         except aiohttp.ClientError as e:
@@ -142,14 +144,18 @@ async def analyze_image(
         image_data = await file.read()
         
         # 调用OpenAI API
-        result = await call_openai_api(image_data, prompt)
+        api_response = await call_openai_api(image_data, prompt)
         
-        return {"result": result}
+        return {
+            "result": api_response["choices"][0]["message"]["content"],
+            "model": api_response.get("model", MODEL_NAME),
+            "usage": api_response.get("usage")
+        }
     except Exception as e:
         logger.error(f"处理请求时发生错误: {str(e)}")
         raise HTTPException(status_code=500, detail=f"处理请求时发生错误: {str(e)}")
 
-@app.post("/analyze/json", response_model=dict)
+@app.post("/analyze/json", response_model=Dict[str, Any])
 async def analyze_image_json(
     file: UploadFile = File(...),
     prompt: str = Form(...),
@@ -169,11 +175,12 @@ async def analyze_image_json(
         image_data = await file.read()
         
         # 调用OpenAI API
-        result_text = await call_openai_api(image_data, prompt + " 请以有效的JSON格式返回结果。")
+        api_response = await call_openai_api(image_data, prompt + " 请以有效的JSON格式返回结果。")
         
         # 尝试解析JSON
         try:
             # 提取JSON部分（如果输出包含其他文本）
+            result_text = api_response["choices"][0]["message"]["content"]
             json_text = result_text
             # 如果文本中包含```json和```，提取它们之间的内容
             if "```json" in result_text and "```" in result_text.split("```json", 1)[1]:
@@ -183,11 +190,27 @@ async def analyze_image_json(
                 json_text = result_text.split("```", 1)[1].split("```", 1)[0].strip()
                 
             result_json = json.loads(json_text)
-            return result_json
+            
+            # 添加模型和使用情况信息
+            response = {
+                **result_json,
+                "_meta": {
+                    "model": api_response.get("model", MODEL_NAME),
+                    "usage": api_response.get("usage")
+                }
+            }
+            return response
         except json.JSONDecodeError:
             # 如果解析JSON失败，返回原始文本
             logger.warning(f"无法解析返回的JSON: {result_text}")
-            return {"error": "无法解析返回的JSON", "raw_result": result_text}
+            return {
+                "error": "无法解析返回的JSON", 
+                "raw_result": result_text,
+                "_meta": {
+                    "model": api_response.get("model", MODEL_NAME),
+                    "usage": api_response.get("usage")
+                }
+            }
     except Exception as e:
         logger.error(f"处理请求时发生错误: {str(e)}")
         raise HTTPException(status_code=500, detail=f"处理请求时发生错误: {str(e)}")
